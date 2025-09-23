@@ -9,10 +9,10 @@ const getAi = (): GoogleGenAI => {
     if (aiInstance) {
         return aiInstance;
     }
-    // FIX: As per coding guidelines, the API key must be obtained from process.env.API_KEY. This also resolves the `import.meta.env` error.
+    // FIX: API key must be obtained from process.env.API_KEY per guidelines.
     const apiKey = process.env.API_KEY;
     if (!apiKey) {
-        throw new Error("API key not configured. Please set the API_KEY environment variable.");
+        throw new Error("API key not configured. Please ensure process.env.API_KEY is set.");
     }
     aiInstance = new GoogleGenAI({ apiKey });
     return aiInstance;

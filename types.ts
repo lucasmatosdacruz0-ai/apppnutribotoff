@@ -15,7 +15,8 @@ export interface Achievement {
     id: string;
     title: string;
     description: string;
-    icon: (props: React.SVGProps<SVGSVGElement>) => JSX.Element;
+    // FIX: Changed JSX.Element to React.ReactElement to resolve namespace issue.
+    icon: (props: React.SVGProps<SVGSVGElement>) => React.ReactElement;
     goal: number;
     category: AchievementCategory;
     isSecret?: boolean;

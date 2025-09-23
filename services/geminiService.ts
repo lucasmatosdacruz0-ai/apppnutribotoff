@@ -9,13 +9,36 @@ const getAi = (): GoogleGenAI => {
     if (aiInstance) {
         return aiInstance;
     }
-    // FIX: API key must be obtained from process.env.API_KEY per guidelines.
     const apiKey = process.env.API_KEY;
-    if (!apiKey) {
-        throw new Error("API key not configured. Please ensure process.env.API_KEY is set.");
+    if (!apiKey || apiKey.trim() === '') {
+        throw new Error("A chave da API do Gemini não está configurada ou está vazia. Verifique se a variável de ambiente API_KEY foi definida corretamente no seu serviço de build (ex: Netlify).");
     }
     aiInstance = new GoogleGenAI({ apiKey });
     return aiInstance;
+};
+
+// Centralized error handler for Gemini API calls
+const handleGeminiError = (error: unknown, context: string): Error => {
+    console.error(`Error during Gemini API call in '${context}':`, error);
+    let errorMessage = `Ocorreu um erro em '${context}'. Tente novamente.`;
+
+    if (error instanceof Error) {
+        if (error.message.includes('API key not valid') || error.message.includes('API_KEY_INVALID')) {
+            errorMessage = "Erro de Autenticação: A chave da API é inválida. Verifique a variável de ambiente (API_KEY) no seu serviço de hospedagem (ex: Netlify) e faça o deploy novamente.";
+        } else if (error.message.includes('fetch failed') || error.message.toLowerCase().includes('network')) {
+            errorMessage = "Erro de Rede: Não foi possível conectar ao serviço de IA. Verifique sua conexão com a internet.";
+        } else if (error.message.includes('429')) { // Quota exceeded
+             errorMessage = "Você atingiu o limite de requisições para a API. Por favor, verifique seu plano e uso no Google AI Studio e tente novamente mais tarde.";
+        } else if (error.message.includes('SAFETY')) {
+            errorMessage = "A sua solicitação ou a resposta da IA foi bloqueada por questões de segurança. Tente reformular seu pedido com outras palavras.";
+        } else if (error.message.includes('Invalid JSON response')) {
+             errorMessage = "A IA retornou uma resposta em formato inválido. Tente novamente, talvez com um pedido mais simples.";
+        } else {
+            errorMessage = `Ocorreu um erro inesperado ao comunicar com a IA. Por favor, tente novamente. Detalhe: ${error.message}`;
+        }
+    }
+    
+    return new Error(errorMessage);
 };
 
 
@@ -23,9 +46,6 @@ const getAi = (): GoogleGenAI => {
 const FAST_MODEL = 'gemini-2.5-flash';
 
 // Model for complex data generation (plans, recipes, lists).
-// Per user suggestion to use a "lite" model for expensive operations,
-// we use 'gemini-2.5-flash' as it's the most cost-effective and fastest official model
-// available in the SDK for these high-token tasks.
 const DATA_GENERATION_MODEL = 'gemini-2.5-flash';
 
 // Model for image generation tasks.
@@ -181,8 +201,7 @@ export const sendMessageToAI = async (message: string) => {
         const result = await chat.sendMessageStream({ message });
         return result;
     } catch (error) {
-        console.error("Error sending message to AI:", error);
-        throw new Error("Não foi possível comunicar com a IA. Tente novamente mais tarde.");
+        throw handleGeminiError(error, "enviar mensagem ao chat");
     }
 };
 
@@ -220,8 +239,7 @@ export const parseMealPlanText = async (text: string): Promise<DailyPlan> => {
          return JSON.parse(jsonText);
 
     } catch(error) {
-        console.error("Error parsing meal plan with AI:", error);
-        throw new Error("Não foi possível importar a dieta do chat. A IA não conseguiu analisar o texto.");
+        throw handleGeminiError(error, "importar dieta do chat");
     }
 };
 
@@ -290,8 +308,7 @@ ${JSON.stringify({ meals: currentPlan.meals.map(m => m.name) })}
         return JSON.parse(jsonText);
 
     } catch (error) {
-        console.error("Error regenerating daily plan with AI:", error);
-        throw new Error("Não foi possível gerar uma nova dieta. A IA não conseguiu processar o pedido.");
+        throw handleGeminiError(error, "gerar nova dieta");
     }
 };
 
@@ -361,8 +378,7 @@ ${JSON.stringify(currentPlan, null, 2)}
         return JSON.parse(jsonText);
 
     } catch (error) {
-        console.error("Error adjusting daily plan with AI:", error);
-        throw new Error(`Não foi possível ajustar a meta de ${macroName}. A IA não conseguiu processar o pedido.`);
+        throw handleGeminiError(error, `ajustar meta de ${macroName}`);
     }
 };
 
@@ -442,8 +458,7 @@ Perfil do Usuário: ${userProfileJSON}
         return planRecord;
 
     } catch (error) {
-        console.error("Error generating weekly plan with AI:", error);
-        throw new Error("Não foi possível gerar uma dieta semanal. A IA não conseguiu processar o pedido.");
+        throw handleGeminiError(error, "gerar dieta semanal");
     }
 };
 
@@ -499,8 +514,7 @@ ${adminInstructionPrompt}
         return JSON.parse(jsonText);
 
     } catch (error) {
-        console.error("Error regenerating meal with AI:", error);
-        throw new Error("Não foi possível regenerar a refeição. A IA não conseguiu processar o pedido.");
+        throw handleGeminiError(error, "regenerar refeição");
     }
 };
 
@@ -521,8 +535,7 @@ export const analyzeMealFromText = async (description: string): Promise<MacroDat
          return JSON.parse(jsonText);
 
     } catch(error) {
-        console.error("Error analyzing meal with AI:", error);
-        throw new Error("Não foi possível analisar a refeição. Verifique a descrição e tente novamente.");
+        throw handleGeminiError(error, "analisar refeição por texto");
     }
 };
 
@@ -556,8 +569,7 @@ export const analyzeMealFromImage = async (imageDataUrl: string): Promise<MacroD
          return JSON.parse(jsonText);
 
     } catch(error) {
-        console.error("Error analyzing meal from image with AI:", error);
-        throw new Error("Não foi possível analisar a imagem. Tente uma foto mais clara ou com menos itens.");
+        throw handleGeminiError(error, "analisar refeição por imagem");
     }
 };
 
@@ -591,8 +603,7 @@ export const analyzeProgress = async (userData: UserData): Promise<string> => {
         });
         return response.text;
     } catch (error) {
-        console.error("Error analyzing progress with AI:", error);
-        throw new Error("Não foi possível gerar a análise de progresso no momento.");
+        throw handleGeminiError(error, "analisar progresso");
     }
 };
 
@@ -627,8 +638,7 @@ Seja claro, conciso e organizado. A lista deve ser prática para o usuário leva
         });
         return response.text;
     } catch (error) {
-        console.error("Error generating shopping list with AI:", error);
-        throw new Error("Não foi possível gerar a lista de compras no momento.");
+        throw handleGeminiError(error, "gerar lista de compras");
     }
 };
 
@@ -650,8 +660,7 @@ Pergunta do usuário: "${question}"`;
         });
         return response.text;
     } catch (error) {
-        console.error("Error getting food info with AI:", error);
-        throw new Error("Não foi possível obter a informação no momento.");
+        throw handleGeminiError(error, "obter informação de alimento");
     }
 };
 
@@ -687,8 +696,7 @@ export const getFoodSubstitution = async (itemToSwap: FoodItem, mealContext: Mea
         const jsonText = response.text.trim();
         return JSON.parse(jsonText);
     } catch (error) {
-        console.error("Error getting food substitution with AI:", error);
-        throw new Error("Não foi possível encontrar um substituto.");
+        throw handleGeminiError(error, "encontrar substituto para alimento");
     }
 }
 
@@ -712,11 +720,7 @@ export const generateImageFromPrompt = async (prompt: string): Promise<string> =
             throw new Error("A IA não retornou nenhuma imagem.");
         }
     } catch(error) {
-        console.error("Error generating image with AI:", error);
-        if (error instanceof Error && error.message.includes('SAFETY')) {
-             throw new Error("Não foi possível gerar a imagem devido às políticas de segurança. Tente um prompt diferente.");
-        }
-        throw new Error("Não foi possível gerar a imagem no momento.");
+        throw handleGeminiError(error, "gerar imagem");
     }
 };
 
@@ -764,8 +768,7 @@ ${adminInstructionPrompt}
         return parsedResponse.recipes || [];
 
     } catch (error) {
-        console.error("Error finding recipes with AI:", error);
-        throw new Error("Não foi possível encontrar receitas. A IA não conseguiu processar o pedido.");
+        throw handleGeminiError(error, "buscar receitas");
     }
 };
 
@@ -788,7 +791,6 @@ export const analyzeActivityFromText = async (description: string): Promise<{ ty
          return JSON.parse(jsonText);
 
     } catch(error) {
-        console.error("Error analyzing activity with AI:", error);
-        throw new Error("Não foi possível analisar a atividade. Verifique a descrição e tente novamente.");
+        throw handleGeminiError(error, "analisar atividade por texto");
     }
 };

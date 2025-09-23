@@ -1,4 +1,5 @@
 
+
 import React from 'react';
 
 // FIX: Add 'Atividades' to the View type

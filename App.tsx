@@ -1076,7 +1076,11 @@ const App: React.FC = () => {
       checkAndIncrementUsage: handleCheckAndIncrementUsage,
       handleChatSendMessage: async (message) => {
           if (!handleCheckAndIncrementUsage('chatInteractions')) throw new Error("Limite de interações no chat atingido.");
-          return geminiService.sendMessageToAI(message);
+          const history = chatMessages.map(m => ({
+            role: m.sender === 'user' ? 'user' : 'model',
+            parts: [{ text: m.text }]
+          }));
+          return geminiService.sendMessageToAI(message, history);
       },
       handleAnalyzeMeal: async (data) => {
           const key = data.imageDataUrl ? 'mealAnalysesImage' : 'mealAnalysesText';

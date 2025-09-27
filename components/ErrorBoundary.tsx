@@ -1,16 +1,11 @@
-
-
 import React, { Component, ErrorInfo, ReactNode } from 'react';
-
-interface Props {
-  children: ReactNode;
-}
 
 interface State {
   hasError: boolean;
 }
 
-class ErrorBoundary extends Component<Props, State> {
+// FIX: Refactored the component's props typing to use `React.PropsWithChildren` to resolve a subtle TypeScript error where `props` was not recognized. This is a more robust way to type components that expect `children`.
+class ErrorBoundary extends Component<React.PropsWithChildren<{}>, State> {
   public state: State = {
     hasError: false,
   };

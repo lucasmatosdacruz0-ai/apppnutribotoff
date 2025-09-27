@@ -8,7 +8,6 @@ interface State {
   hasError: boolean;
 }
 
-// FIX: Replaced usage of `React.PropsWithChildren` with an explicit `ErrorBoundaryProps` interface to resolve a TypeScript error where `this.props` was not recognized on the component instance.
 class ErrorBoundary extends Component<ErrorBoundaryProps, State> {
   public state: State = {
     hasError: false,
@@ -28,7 +27,6 @@ class ErrorBoundary extends Component<ErrorBoundaryProps, State> {
     if (this.state.hasError) {
       return (
         <div className="flex flex-col items-center justify-center h-full text-center p-8 bg-red-50 rounded-xl">
-          {/* FIX: Changed h1 to h2 for better semantic HTML. */}
           <h2 className="text-2xl font-bold text-red-700 mb-4">Oops! Algo deu errado.</h2>
           <p className="text-red-600 mb-6 max-w-md">
             Ocorreu um erro inesperado ao tentar exibir esta tela. Isso pode ter sido causado por uma resposta inesperada da IA ou um problema de renderização.

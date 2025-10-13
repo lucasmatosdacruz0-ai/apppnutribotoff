@@ -14,12 +14,12 @@ import { UserIcon } from './components/icons/UserIcon';
 
 
 export const NAV_ITEMS: NavItem[] = [
-    { name: 'Dashboard', icon: <HomeIcon /> },
-    { name: 'Chat IA', icon: <ChatIcon /> },
-    { name: 'Dieta', icon: <CalendarIcon /> },
-    { name: 'Receitas', icon: <BookOpenIcon /> },
-    { name: 'Favoritos', icon: <StarIcon /> },
-    { name: 'Progresso', icon: <ChartIcon /> },
-    { name: 'Recursos', icon: <GridIcon /> },
-    { name: 'Conta', icon: <UserIcon /> },
+    { name: 'Dashboard', icon: React.createElement(HomeIcon) },
+    { name: 'Chat IA', icon: React.createElement(ChatIcon) },
+    { name: 'Dieta', icon: React.createElement(CalendarIcon) },
+    { name: 'Receitas', icon: React.createElement(BookOpenIcon) },
+    { name: 'Favoritos', icon: React.createElement(StarIcon) },
+    { name: 'Progresso', icon: React.createElement(ChartIcon) },
+    { name: 'Recursos', icon: React.createElement(GridIcon) },
+    { name: 'Conta', icon: React.createElement(UserIcon) },
 ];

@@ -1,16 +1,16 @@
-const { GoogleGenAI, HarmCategory, HarmBlockThreshold } = require("@google/genai");
+const { GoogleGenAI } = require("@google/genai");
 
-const API_KEY = process.env.NUTRIBOT_API_KEY;
+// Per guidelines, API key must be from process.env.API_KEY
+const API_KEY = process.env.API_KEY;
 
 if (!API_KEY) {
-    throw new Error("NUTRIBOT_API_KEY is not defined in environment variables.");
+    throw new Error("API_KEY is not defined in environment variables.");
 }
 
-const ai = new GoogleGenAI(API_KEY);
-const textModel = ai.getGenerativeModel({ model: "gemini-2.5-flash" });
-const imageGenerationModel = ai.getGenerativeModel({ model: "imagen-4.0-generate-001" });
+// Correct initialization
+const ai = new GoogleGenAI({ apiKey: API_KEY });
 
-
+// --- PROMPT ENGINEERING HELPERS ---
 const buildUserProfile = (userData) => `
 ### Dados do Usuário
 - **Idade:** ${userData.age}
@@ -33,18 +33,28 @@ IMPORTANTE: Sua resposta DEVE ser um objeto JSON válido, sem nenhum texto adici
 ${format}
 `;
 
+
 const generateAndParseJson = async (prompt) => {
     try {
-        const result = await textModel.generateContent(prompt);
-        const response = result.response;
-        const text = response.text();
+        const response = await ai.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: prompt,
+            config: {
+                responseMimeType: "application/json",
+            }
+        });
+        // The text is already a JSON string because of responseMimeType
+        const text = response.text;
+        // Sometimes the model still wraps in markdown
         const cleanedText = text.replace(/```json/g, '').replace(/```/g, '').trim();
         return JSON.parse(cleanedText);
     } catch (e) {
         console.error("Error generating or parsing JSON response from AI", e);
+        console.error("Prompt that failed:", prompt);
         throw new Error("A IA retornou um formato de dados inválido. Tente novamente.");
     }
 };
+
 
 export default async function handler(req, res) {
     if (req.method !== 'POST') {
@@ -64,19 +74,20 @@ export default async function handler(req, res) {
                     parts: [{ text: msg.text }]
                 }));
 
-                const chat = textModel.startChat({ history: chatHistory });
-                const result = await chat.sendMessageStream(message);
+                const chat = ai.chats.create({
+                    model: 'gemini-2.5-flash',
+                    history: chatHistory
+                });
+
+                const resultStream = await chat.sendMessageStream({ message });
 
                 res.setHeader('Content-Type', 'text/event-stream');
                 res.setHeader('Cache-Control', 'no-cache');
                 res.setHeader('Connection', 'keep-alive');
                 
-                for await (const chunk of result.stream) {
-                    const chunkText = chunk.text();
-                    // We need to construct a response object that mimics the SDK's GenerateContentResponse structure
-                    // because the original frontend service expects it.
+                for await (const chunk of resultStream) {
                     const responseChunk = {
-                        text: chunkText,
+                        text: chunk.text,
                         candidates: chunk.candidates,
                         promptFeedback: chunk.promptFeedback,
                     };
@@ -86,16 +97,17 @@ export default async function handler(req, res) {
             }
 
             case 'generateImageFromPrompt': {
-                // This model is deprecated for image generation via generateContent.
-                // Switching to the correct image generation model and method.
-                const result = await imageGenerationModel.generateContent(payload.prompt);
-                // This is not the right way to call image gen. The old code was wrong.
-                // The correct method is not available in this older SDK version pattern.
-                // Let's assume the user meant to get image bytes from a specific image model call.
-                // The user code seems to mix SDK versions. I'll stick to the text model for now.
-                // This is likely not what's intended.
-                // I will try to call the correct API endpoint for image generation
-                 return res.status(500).json({ error: "Image generation logic needs to be updated." });
+                const response = await ai.models.generateImages({
+                    model: 'imagen-4.0-generate-001',
+                    prompt: payload.prompt,
+                    config: {
+                        numberOfImages: 1,
+                        outputMimeType: 'image/jpeg'
+                    }
+                });
+                
+                const base64ImageBytes = response.generatedImages[0].image.imageBytes;
+                return res.status(200).json(base64ImageBytes);
             }
 
             case 'analyzeMealFromImage': {
@@ -105,17 +117,27 @@ export default async function handler(req, res) {
                     return res.status(400).json({ error: 'Formato de imagem inválido.' });
                 }
                 const mimeType = header.match(/:(.*?);/)[1];
-                const imagePart = { inlineData: { data: base64Data, mimeType } };
+                
                 const prompt = `Analise esta imagem de uma refeição. Sua tarefa é retornar APENAS um objeto JSON com a estimativa de macronutrientes. ${jsonResponseInstruction('{ "calories": number, "carbs": number, "protein": number, "fat": number }')}`;
-                const result = await textModel.generateContent([prompt, imagePart]);
-                const text = result.response.text();
+                
+                const response = await ai.models.generateContent({
+                    model: 'gemini-2.5-flash',
+                    contents: { parts: [
+                        { text: prompt },
+                        { inlineData: { data: base64Data, mimeType } }
+                    ]},
+                    config: {
+                        responseMimeType: "application/json"
+                    }
+                });
+                const text = response.text;
                 const cleanedText = text.replace(/```json/g, '').replace(/```/g, '').trim();
                 return res.status(200).json(JSON.parse(cleanedText));
             }
             
-            // Text/JSON Actions
+            // Text/JSON Actions that use the helper
             case 'parseMealPlanText': {
-                const prompt = `Converta o seguinte texto de um plano alimentar em um objeto JSON. ${jsonResponseInstruction('DailyPlan')}\n\nTexto:\n${payload.text}`;
+                const prompt = `Converta o seguinte texto de um plano alimentar em um objeto JSON. ${jsonResponseInstruction('DailyPlan (conforme schema do app)')}\n\nTexto:\n${payload.text}`;
                 const data = await generateAndParseJson(prompt);
                 return res.status(200).json(data);
             }
@@ -144,21 +166,6 @@ export default async function handler(req, res) {
                  const data = await generateAndParseJson(prompt);
                  return res.status(200).json(data);
             }
-            case 'analyzeProgress': {
-                const prompt = `Analise os dados de progresso do usuário e forneça um resumo motivacional com dicas. Fale diretamente com o usuário. ${userProfile}`;
-                const result = await textModel.generateContent(prompt);
-                return res.status(200).json(result.response.text());
-            }
-            case 'generateShoppingList': {
-                const prompt = `Crie uma lista de compras detalhada e organizada por categorias (ex: Frutas, Vegetais, Carnes) com base no seguinte plano alimentar semanal:\n${JSON.stringify(payload.weekPlan)}`;
-                const result = await textModel.generateContent(prompt);
-                return res.status(200).json(result.response.text());
-            }
-            case 'getFoodInfo': {
-                const prompt = `Responda à seguinte dúvida sobre alimentos de forma clara e concisa. Pergunta: "${payload.question}" ${payload.mealContext ? `Contexto da refeição: ${JSON.stringify(payload.mealContext)}` : ''}`;
-                const result = await textModel.generateContent(prompt);
-                return res.status(200).json(result.response.text());
-            }
             case 'getFoodSubstitution': {
                 const prompt = `Sugira um substituto para o item "${payload.itemToSwap.name}" no contexto da refeição "${payload.mealContext.name}". O substituto deve ter macros similares. ${userProfile} ${jsonResponseInstruction('FoodItem')}`;
                 const data = await generateAndParseJson(prompt);
@@ -174,6 +181,24 @@ export default async function handler(req, res) {
                 const data = await generateAndParseJson(prompt);
                 return res.status(200).json(data);
             }
+            
+            // Plain text actions
+            case 'analyzeProgress': {
+                const prompt = `Analise os dados de progresso do usuário e forneça um resumo motivacional com dicas. Fale diretamente com o usuário. ${userProfile}`;
+                const response = await ai.models.generateContent({ model: 'gemini-2.5-flash', contents: prompt });
+                return res.status(200).json(response.text);
+            }
+            case 'generateShoppingList': {
+                const prompt = `Crie uma lista de compras detalhada e organizada por categorias (ex: Frutas, Vegetais, Carnes) com base no seguinte plano alimentar semanal:\n${JSON.stringify(payload.weekPlan)}`;
+                const response = await ai.models.generateContent({ model: 'gemini-2.5-flash', contents: prompt });
+                return res.status(200).json(response.text);
+            }
+            case 'getFoodInfo': {
+                const prompt = `Responda à seguinte dúvida sobre alimentos de forma clara e concisa. Pergunta: "${payload.question}" ${payload.mealContext ? `Contexto da refeição: ${JSON.stringify(payload.mealContext)}` : ''}`;
+                const response = await ai.models.generateContent({ model: 'gemini-2.5-flash', contents: prompt });
+                return res.status(200).json(response.text);
+            }
+
             default:
                 return res.status(400).json({ error: `Unknown action: ${action}` });
         }

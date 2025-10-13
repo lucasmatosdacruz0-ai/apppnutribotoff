@@ -84,14 +84,44 @@ const ChatView: React.FC<ChatViewProps> = ({ userData, messages, setMessages, on
 
         const userMessageText = isButtonAction ? `*Ação solicitada: ${prompt.split('\n')[0]}*` : prompt;
         const userMessage: Message = { sender: 'user', text: userMessageText };
-        const thinkingMessage: ChatMessage = { sender: 'bot', text: 'NutriBot está pensando...', type: 'thinking', id: Date.now() };
+        const thinkingMessage: Message & {type: 'thinking'} = { sender: 'bot', text: 'NutriBot está pensando...', type: 'thinking' };
 
         setMessages(prev => [...prev, userMessage, thinkingMessage]);
         if (!isButtonAction) setInput('');
         setIsLoading(true);
 
         try {
-            const botResponse = await handlers.handleChatSendMessage(prompt);
+            const stream = await handlers.handleChatSendMessage(prompt);
+            let botResponse = '';
+            let firstChunk = true;
+
+            for await (const chunk of stream) {
+                const chunkText = chunk.text;
+                botResponse += chunkText;
+                
+                if (firstChunk) {
+                    setMessages(prev => {
+                        const newMessages = [...prev];
+                        const lastMessage = newMessages[newMessages.length - 1];
+                        if (lastMessage?.sender === 'bot' && (lastMessage as any).type === 'thinking') {
+                           lastMessage.text = botResponse;
+                           delete (lastMessage as any).type;
+                           lastMessage.isStreaming = true;
+                        }
+                        return newMessages;
+                    });
+                    firstChunk = false;
+                } else {
+                    setMessages(prev => {
+                        const newMessages = [...prev];
+                        const lastMessage = newMessages[newMessages.length - 1];
+                        if (lastMessage?.sender === 'bot') {
+                            lastMessage.text = botResponse;
+                        }
+                        return newMessages;
+                    });
+                }
+            }
             
             const botResponseLower = botResponse.toLowerCase();
             if ((botResponseLower.includes('plano alimentar') || botResponseLower.includes('dieta')) && botResponse.includes('|')) {
@@ -101,9 +131,8 @@ const ChatView: React.FC<ChatViewProps> = ({ userData, messages, setMessages, on
             setMessages(prev => {
                 const newMessages = [...prev];
                 const lastMessage = newMessages[newMessages.length - 1];
-                if (lastMessage?.sender === 'bot' && (lastMessage as any).type === 'thinking') {
-                   lastMessage.text = botResponse;
-                   delete (lastMessage as any).type;
+                if (lastMessage?.sender === 'bot') {
+                    lastMessage.isStreaming = false;
                 }
                 return newMessages;
             });
@@ -115,6 +144,7 @@ const ChatView: React.FC<ChatViewProps> = ({ userData, messages, setMessages, on
                 if (lastMessage?.sender === 'bot') {
                     lastMessage.text = `Desculpe, ocorreu um erro. ${errorMessage}`;
                     delete (lastMessage as any).type;
+                    lastMessage.isStreaming = false;
                 }
                 return newMessages;
             });
@@ -134,7 +164,8 @@ const ChatView: React.FC<ChatViewProps> = ({ userData, messages, setMessages, on
              return `<div class="flex items-center gap-2"><div class="dot-flashing"></div><span>${msg.text}</span></div>`;
         }
         const rawMarkup = marked.parse(msg.text, { gfm: true, breaks: true }) as string;
-        return rawMarkup;
+        const streamingIndicator = msg.isStreaming ? '<span class="inline-block w-2 h-4 bg-slate-600 animate-pulse ml-2"></span>' : '';
+        return rawMarkup + streamingIndicator;
     };
 
     const handleCreateDiet = () => {

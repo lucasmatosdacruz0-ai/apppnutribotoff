@@ -1,3 +1,5 @@
+
+
 import React from 'react';
 
 // FIX: Add 'Atividades' to the View type
@@ -36,7 +38,6 @@ export interface NavItem {
 export interface Message {
     sender: 'user' | 'bot';
     text: string;
-    // FIX: Add isStreaming property to support chat streaming UI.
     isStreaming?: boolean;
 }
 
@@ -196,7 +197,7 @@ export interface UserDataHandlers {
     checkAndIncrementUsage: (featureKey: string, amount?: number) => boolean;
 
     // External AI call handlers for usage tracking
-    handleChatSendMessage: (message: string) => Promise<string>;
+    handleChatSendMessage: (message: string) => Promise<AsyncGenerator<any, void, unknown>>;
     handleAnalyzeMeal: (data: { description?: string; imageDataUrl?: string }) => Promise<MacroData>;
     handleAnalyzeProgress: () => Promise<string>;
     getFoodInfo: (question: string, mealContext?: Meal) => Promise<string>;

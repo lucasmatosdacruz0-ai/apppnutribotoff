@@ -1,5 +1,4 @@
 
-
 import React, { useState, useEffect, useCallback, FC } from 'react';
 import { View, UserData, UserDataHandlers, Message, DailyPlan, Recipe, RecipesViewState, NotificationState, UpsellModalState, PlanKey, DietDifficulty, MacroData, FoodItem, Meal, ActivityLog } from './types';
 import OnboardingFlow from './components/OnboardingFlow';
@@ -474,14 +473,16 @@ const App: FC = () => {
         );
     }, []);
     
-    const handleChatSendMessage = useCallback(async (message: string): Promise<string> => {
+    const handleChatSendMessage = useCallback(async (message: string) => {
         if(!checkAndIncrementUsage('chatInteractions')) {
-            throw new Error("Limite de interações com o chat atingido.");
+            // A simple generator that yields nothing and returns
+            async function* emptyGenerator() { yield* []; }
+            return emptyGenerator();
         }
         const history = messages.slice(-10); // Pass last 10 messages as history
-        const response = geminiService.sendMessageToAI(message, history);
+        const stream = geminiService.sendMessageToAI(message, history);
         setLastMealPlanText(null); // Reset before new message
-        return response;
+        return stream;
     }, [messages, checkAndIncrementUsage]);
 
     const handleAnalyzeMeal = useCallback(async (data: { description?: string; imageDataUrl?: string }) => {

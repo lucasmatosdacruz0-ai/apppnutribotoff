@@ -47,7 +47,7 @@ const ChatView: React.FC<ChatViewProps> = ({ userData, messages, setMessages, on
         const userMessageText = isButtonAction ? `*Ação solicitada: ${prompt.split('\n')[0]}*` : prompt;
         const userMessage: Message = { sender: 'user', text: userMessageText };
         
-        const botMessage: Message = { sender: 'bot', text: 'Pensando...', isStreaming: true };
+        const botMessage: Message = { sender: 'bot', text: '', isStreaming: true };
 
         setMessages(prev => [...prev, userMessage, botMessage]);
         if (!isButtonAction) {
@@ -56,8 +56,20 @@ const ChatView: React.FC<ChatViewProps> = ({ userData, messages, setMessages, on
         setIsLoading(true);
 
         try {
-            // FIX: The handler returns a Promise<string>, not a stream. Await the full response.
-            const botResponse = await handlers.handleChatSendMessage(prompt);
+            const stream = await handlers.handleChatSendMessage(prompt);
+            let botResponse = '';
+            for await (const chunk of stream) {
+                const chunkText = chunk.text;
+                botResponse += chunkText;
+                setMessages(prev => {
+                    const newMessages = [...prev];
+                    const lastMessage = newMessages[newMessages.length - 1];
+                    if (lastMessage.sender === 'bot') {
+                        lastMessage.text = botResponse;
+                    }
+                    return newMessages;
+                });
+            }
 
             const botResponseLower = botResponse.toLowerCase();
             if ((botResponseLower.includes('plano alimentar') || botResponseLower.includes('dieta')) && botResponse.includes('|')) {
@@ -68,7 +80,6 @@ const ChatView: React.FC<ChatViewProps> = ({ userData, messages, setMessages, on
                 const newMessages = [...prev];
                 const lastMessage = newMessages[newMessages.length - 1];
                 if (lastMessage.sender === 'bot') {
-                    lastMessage.text = botResponse;
                     lastMessage.isStreaming = false;
                 }
                 return newMessages;

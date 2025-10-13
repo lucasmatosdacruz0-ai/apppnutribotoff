@@ -1,15 +1,16 @@
-// O tempo de execução Node.js 18+ da Netlify fornece busca globalmente.
-// Isso remove uma dependência que pode não ser empacotada corretamente.
+const { GoogleGenAI } = require("@google/genai");
 
-const API_KEY = process.env.GOOGLE_API_KEY;
+// Per guidelines, API key must be from process.env.API_KEY
+const API_KEY = process.env.API_KEY;
 if (!API_KEY) {
-    throw new Error("GOOGLE_API_KEY is not defined in environment variables.");
+    // Return an error response instead of throwing, which is better for serverless functions
+    // The function will still fail, but with a clear message.
+    console.error("API_KEY is not defined in environment variables.");
 }
 
-const API_BASE_URL = 'https://generativelanguage.googleapis.com';
+const ai = new GoogleGenAI({ apiKey: API_KEY });
 
 // --- PROMPT ENGINEERING HELPERS ---
-
 const buildUserProfile = (userData) => `
 ### Dados do Usuário
 - **Idade:** ${userData.age}
@@ -32,202 +33,176 @@ IMPORTANTE: Sua resposta DEVE ser um objeto JSON válido, sem nenhum texto adici
 ${format}
 `;
 
-// --- API CALL LOGIC ---
-
-async function handleApiCall(url, body, context) {
+const generateAndParseJson = async (prompt) => {
     try {
-        const response = await fetch(url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body),
-        });
-
-        if (!response.ok) {
-            const errorBody = await response.json();
-            console.error(`Error from Gemini API in '${context}':`, errorBody);
-            const errorMessage = errorBody?.error?.message || `HTTP error ${response.status}`;
-            return { statusCode: 500, body: JSON.stringify({ error: `Erro da IA: ${errorMessage}` }) };
-        }
-        
-        const data = await response.json();
-        
-        // Logic for standard text/json responses
-        if (data.candidates && data.candidates[0].content && data.candidates[0].content.parts) {
-            const text = data.candidates[0].content.parts[0].text;
-            try {
-                // Attempt to parse if it looks like JSON
-                const cleanedText = text.replace(/```json/g, '').replace(/```/g, '').trim();
-                return { statusCode: 200, body: JSON.stringify({ data: JSON.parse(cleanedText) }) };
-            } catch {
-                // Return as plain text if not valid JSON
-                return { statusCode: 200, body: JSON.stringify({ data: text }) };
+        const response = await ai.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: prompt,
+            config: {
+                responseMimeType: "application/json",
             }
-        }
-        
-        // Logic for image generation responses
-        if (data.generatedImages) {
-            return { statusCode: 200, body: JSON.stringify({ data: data.generatedImages[0].image.imageBytes }) };
-        }
-
-        throw new Error("Formato de resposta da IA inesperado.");
-
-    } catch (err) {
-        console.error(`Error in function '${context}':`, err);
-        return { statusCode: 500, body: JSON.stringify({ error: err.message }) };
+        });
+        const text = response.text;
+        const cleanedText = text.replace(/```json/g, '').replace(/```/g, '').trim();
+        return JSON.parse(cleanedText);
+    } catch (e) {
+        console.error("Error generating or parsing JSON response from AI", e);
+        console.error("Prompt that failed:", prompt);
+        throw new Error("A IA retornou um formato de dados inválido. Tente novamente.");
     }
-}
+};
 
-// --- MAIN HANDLER ---
-
-export async function handler(event) {
+exports.handler = async function(event) {
+    if (!API_KEY) {
+        return { statusCode: 500, body: JSON.stringify({ error: 'API_KEY for Gemini is not configured on the server.' }) };
+    }
+    
     if (event.httpMethod !== 'POST') {
         return { statusCode: 405, body: 'Method Not Allowed' };
     }
 
     const { action, payload } = JSON.parse(event.body);
-    let prompt, body, url, model;
+    const userProfile = payload?.userData ? buildUserProfile(payload.userData) : '';
 
-    const userProfile = payload.userData ? buildUserProfile(payload.userData) : '';
+    try {
+        switch (action) {
+            case 'chatStream': {
+                const { message, history } = payload;
+                const chatHistory = history.map(msg => ({
+                    role: msg.sender === 'user' ? 'user' : 'model',
+                    parts: [{ text: msg.text }]
+                }));
 
-    switch (action) {
-        // --- STREAMING ACTIONS ---
-        case 'chatStream': {
-            const { message, history } = payload;
-            const model = 'gemini-2.5-flash';
-            const url = `${API_BASE_URL}/v1beta/models/${model}:streamGenerateContent?key=${API_KEY}`;
-            
-            const contents = history.map(h => ({
-                role: h.sender === 'user' ? 'user' : 'model',
-                parts: [{ text: h.text }]
-            }));
-            contents.push({ role: 'user', parts: [{ text: message }]});
+                const chat = ai.chats.create({
+                    model: 'gemini-2.5-flash',
+                    history: chatHistory
+                });
 
-            const body = { contents };
-
-            const geminiResponse = await fetch(url, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(body),
-            });
-            
-            // Forward the stream directly to the client
-            return {
-                statusCode: 200,
-                headers: { 
-                    'Content-Type': 'text/event-stream',
-                    'Cache-Control': 'no-cache',
-                    'Connection': 'keep-alive',
-                },
-                body: geminiResponse.body,
-            };
-        }
-
-        // --- IMAGE GENERATION ACTIONS ---
-        case 'generateImageFromPrompt':
-            model = 'imagen-4.0-generate-001';
-            url = `${API_BASE_URL}/v1/models/${model}:generateImages?key=${API_KEY}`;
-            body = { 
-                prompt: payload.prompt,
-                config: { numberOfImages: 1, outputMimeType: 'image/jpeg' }
-            };
-            return handleApiCall(url, body, action);
-
-        // --- MULTIMODAL ACTIONS ---
-        case 'analyzeMealFromImage': {
-            model = 'gemini-2.5-flash';
-            url = `${API_BASE_URL}/v1beta/models/${model}:generateContent?key=${API_KEY}`;
-            const { imageDataUrl } = payload;
-            const [header, base64Data] = imageDataUrl.split(',');
-            if (!header || !base64Data) {
-                return { statusCode: 400, body: JSON.stringify({ error: 'Formato de imagem inválido.'})};
-            }
-            const mimeType = header.match(/:(.*?);/)[1];
-            
-            prompt = `Analise esta imagem de uma refeição. Sua tarefa é retornar APENAS um objeto JSON com a estimativa de macronutrientes. ${jsonResponseInstruction('{ "calories": number, "carbs": number, "protein": number, "fat": number }')}`;
-            
-            body = {
-                contents: [{
-                    parts: [
-                        { text: prompt },
-                        { inlineData: { mimeType, data: base64Data } }
-                    ]
-                }],
-                generationConfig: { responseMimeType: "application/json" }
-            };
-            return handleApiCall(url, body, action);
-        }
-            
-        // --- TEXT/JSON ACTIONS ---
-        default: {
-            model = 'gemini-2.5-flash';
-            url = `${API_BASE_URL}/v1beta/models/${model}:generateContent?key=${API_KEY}`;
-            body = { generationConfig: { responseMimeType: "application/json" }};
-            let plainTextResponse = false;
-
-            switch (action) {
-                case 'parseMealPlanText':
-                    prompt = `Converta o seguinte texto de um plano alimentar em um objeto JSON. ${jsonResponseInstruction('DailyPlan (definido no schema do app)')}\n\nTexto:\n${payload.text}`;
-                    break;
+                const resultStream = await chat.sendMessageStream({ message });
                 
-                case 'regenerateDailyPlan':
-                    prompt = `Com base no perfil do usuário, gere um novo plano alimentar para a data ${payload.currentPlan.date}. ${payload.numberOfMeals ? `O plano deve ter exatamente ${payload.numberOfMeals} refeições.` : ''} ${userProfile} ${jsonResponseInstruction('DailyPlan')}`;
-                    break;
-                
-                case 'adjustDailyPlanForMacro':
-                    prompt = `Ajuste este plano alimentar para se aproximar mais da meta de ${payload.macroToFix}. Mantenha as calorias totais o mais próximo possível da meta. Plano original:\n${JSON.stringify(payload.currentPlan)}\n${userProfile} ${jsonResponseInstruction('DailyPlan')}`;
-                    break;
-                
-                case 'generateWeeklyPlan':
-                    prompt = `Crie um plano alimentar para 7 dias, começando em ${payload.weekStartDate.toISOString().split('T')[0]}. ${payload.observation ? `Observação: ${payload.observation}`: ''} ${userProfile} ${jsonResponseInstruction('Record<string, DailyPlan>')}`;
-                    break;
-                
-                case 'regenerateMealFromPrompt':
-                    prompt = `Regenere a refeição "${payload.meal.name}" com base na seguinte instrução: "${payload.prompt}". ${userProfile} ${jsonResponseInstruction('Meal')}`;
-                    break;
+                const encoder = new TextEncoder();
+                const bodyStream = new ReadableStream({
+                    async start(controller) {
+                        for await (const chunk of resultStream) {
+                            const responseChunk = {
+                                text: chunk.text,
+                                candidates: chunk.candidates,
+                                promptFeedback: chunk.promptFeedback,
+                            };
+                            controller.enqueue(encoder.encode(`data: ${JSON.stringify(responseChunk)}\n\n`));
+                        }
+                        controller.close();
+                    }
+                });
 
-                case 'analyzeMealFromText':
-                    prompt = `Analise esta descrição de uma refeição e retorne uma estimativa dos macronutrientes. ${jsonResponseInstruction('{ "calories": number, "carbs": number, "protein": number, "fat": number }')}\n\nDescrição: ${payload.description}`;
-                    break;
-
-                case 'analyzeProgress':
-                    plainTextResponse = true;
-                    body = {};
-                    prompt = `Analise os dados de progresso do usuário e forneça um resumo motivacional com dicas. Fale diretamente com o usuário. ${userProfile}`;
-                    break;
-                
-                case 'generateShoppingList':
-                    plainTextResponse = true;
-                    body = {};
-                    prompt = `Crie uma lista de compras detalhada e organizada por categorias (ex: Frutas, Vegetais, Carnes) com base no seguinte plano alimentar semanal:\n${JSON.stringify(payload.weekPlan)}`;
-                    break;
-
-                case 'getFoodInfo':
-                    plainTextResponse = true;
-                    body = {};
-                    prompt = `Responda à seguinte dúvida sobre alimentos de forma clara e concisa. Pergunta: "${payload.question}" ${payload.mealContext ? `Contexto da refeição: ${JSON.stringify(payload.mealContext)}` : ''}`;
-                    break;
-
-                case 'getFoodSubstitution':
-                    prompt = `Sugira um substituto para o item "${payload.itemToSwap.name}" no contexto da refeição "${payload.mealContext.name}". O substituto deve ter macros similares. ${userProfile} ${jsonResponseInstruction('FoodItem')}`;
-                    break;
-
-                case 'findRecipes':
-                    prompt = `Encontre ${payload.numRecipes} receitas com base na busca: "${payload.query}". Para cada receita, forneça um prompt de imagem otimizado para um gerador de imagens. ${userProfile} ${jsonResponseInstruction('Recipe[]')}`;
-                    break;
-
-                case 'analyzeActivityFromText':
-                    prompt = `Analise o seguinte texto sobre uma atividade física e extraia o tipo, duração em minutos e calorias queimadas. ${jsonResponseInstruction('{ "type": string, "duration": number, "caloriesBurned": number }')}\n\nTexto: ${payload.description}`;
-                    break;
-
-                default:
-                    return { statusCode: 400, body: JSON.stringify({ error: `Ação desconhecida: ${action}` }) };
+                return {
+                    statusCode: 200,
+                    headers: {
+                        'Content-Type': 'text/event-stream',
+                        'Cache-Control': 'no-cache',
+                        'Connection': 'keep-alive',
+                    },
+                    body: bodyStream,
+                };
             }
             
-            body.contents = [{ parts: [{ text: prompt }] }];
-            if (plainTextResponse) {
-                delete body.generationConfig;
+            case 'generateImageFromPrompt': {
+                const response = await ai.models.generateImages({
+                    model: 'imagen-4.0-generate-001',
+                    prompt: payload.prompt,
+                    config: { numberOfImages: 1, outputMimeType: 'image/jpeg' }
+                });
+                const base64ImageBytes = response.generatedImages[0].image.imageBytes;
+                return { statusCode: 200, body: JSON.stringify(base64ImageBytes) };
             }
-            return handleApiCall(url, body, action);
+            
+            case 'analyzeMealFromImage': {
+                const { imageDataUrl } = payload;
+                const [header, base64Data] = imageDataUrl.split(',');
+                if (!header || !base64Data) {
+                    return { statusCode: 400, body: JSON.stringify({ error: 'Formato de imagem inválido.'})};
+                }
+                const mimeType = header.match(/:(.*?);/)[1];
+                
+                const prompt = `Analise esta imagem de uma refeição. Sua tarefa é retornar APENAS um objeto JSON com a estimativa de macronutrientes. ${jsonResponseInstruction('{ "calories": number, "carbs": number, "protein": number, "fat": number }')}`;
+                
+                const response = await ai.models.generateContent({
+                    model: 'gemini-2.5-flash',
+                    contents: { parts: [{ text: prompt }, { inlineData: { data: base64Data, mimeType } }] },
+                    config: { responseMimeType: "application/json" }
+                });
+                const text = response.text.replace(/```json/g, '').replace(/```/g, '').trim();
+                return { statusCode: 200, body: text };
+            }
+            
+            case 'parseMealPlanText': {
+                const prompt = `Converta o seguinte texto de um plano alimentar em um objeto JSON. ${jsonResponseInstruction('DailyPlan (conforme schema do app)')}\n\nTexto:\n${payload.text}`;
+                const data = await generateAndParseJson(prompt);
+                return { statusCode: 200, body: JSON.stringify(data) };
+            }
+            case 'regenerateDailyPlan': {
+                const prompt = `Com base no perfil do usuário, gere um novo plano alimentar para a data ${payload.currentPlan.date}. ${payload.numberOfMeals ? `O plano deve ter exatamente ${payload.numberOfMeals} refeições.` : ''} ${userProfile} ${jsonResponseInstruction('DailyPlan')}`;
+                const data = await generateAndParseJson(prompt);
+                return { statusCode: 200, body: JSON.stringify(data) };
+            }
+            case 'adjustDailyPlanForMacro': {
+                 const prompt = `Ajuste este plano alimentar para se aproximar mais da meta de ${payload.macroToFix}. Mantenha as calorias totais o mais próximo possível da meta. Plano original:\n${JSON.stringify(payload.currentPlan)}\n${userProfile} ${jsonResponseInstruction('DailyPlan')}`;
+                 const data = await generateAndParseJson(prompt);
+                 return { statusCode: 200, body: JSON.stringify(data) };
+            }
+            case 'generateWeeklyPlan': {
+                const prompt = `Crie um plano alimentar para 7 dias, começando em ${new Date(payload.weekStartDate).toISOString().split('T')[0]}. ${payload.observation ? `Observação: ${payload.observation}`: ''} ${userProfile} ${jsonResponseInstruction('Record<string, DailyPlan>')}`;
+                const data = await generateAndParseJson(prompt);
+                return { statusCode: 200, body: JSON.stringify(data) };
+            }
+            case 'regenerateMealFromPrompt': {
+                const prompt = `Regenere a refeição "${payload.meal.name}" com base na seguinte instrução: "${payload.promptStr}". ${userProfile} ${jsonResponseInstruction('Meal')}`;
+                const data = await generateAndParseJson(prompt);
+                return { statusCode: 200, body: JSON.stringify(data) };
+            }
+            case 'analyzeMealFromText': {
+                 const prompt = `Analise esta descrição de uma refeição e retorne uma estimativa dos macronutrientes. ${jsonResponseInstruction('{ "calories": number, "carbs": number, "protein": number, "fat": number }')}\n\nDescrição: ${payload.description}`;
+                 const data = await generateAndParseJson(prompt);
+                 return { statusCode: 200, body: JSON.stringify(data) };
+            }
+            case 'getFoodSubstitution': {
+                const prompt = `Sugira um substituto para o item "${payload.itemToSwap.name}" no contexto da refeição "${payload.mealContext.name}". O substituto deve ter macros similares. ${userProfile} ${jsonResponseInstruction('FoodItem')}`;
+                const data = await generateAndParseJson(prompt);
+                return { statusCode: 200, body: JSON.stringify(data) };
+            }
+            case 'findRecipes': {
+                const prompt = `Encontre ${payload.numRecipes} receitas com base na busca: "${payload.query}". Para cada receita, forneça um prompt de imagem otimizado para um gerador de imagens. ${userProfile} ${jsonResponseInstruction('Recipe[]')}`;
+                const data = await generateAndParseJson(prompt);
+                return { statusCode: 200, body: JSON.stringify(data) };
+            }
+            case 'analyzeActivityFromText': {
+                const prompt = `Analise o seguinte texto sobre uma atividade física e extraia o tipo, duração em minutos e calorias queimadas. ${jsonResponseInstruction('{ "type": string, "duration": number, "caloriesBurned": number }')}\n\nTexto: ${payload.description}`;
+                const data = await generateAndParseJson(prompt);
+                return { statusCode: 200, body: JSON.stringify(data) };
+            }
+            
+            // Plain text actions
+            case 'analyzeProgress': {
+                const prompt = `Analise os dados de progresso do usuário e forneça um resumo motivacional com dicas. Fale diretamente com o usuário. ${userProfile}`;
+                const response = await ai.models.generateContent({ model: 'gemini-2.5-flash', contents: prompt });
+                return { statusCode: 200, body: JSON.stringify(response.text) };
+            }
+            case 'generateShoppingList': {
+                const prompt = `Crie uma lista de compras detalhada e organizada por categorias (ex: Frutas, Vegetais, Carnes) com base no seguinte plano alimentar semanal:\n${JSON.stringify(payload.weekPlan)}`;
+                const response = await ai.models.generateContent({ model: 'gemini-2.5-flash', contents: prompt });
+                return { statusCode: 200, body: JSON.stringify(response.text) };
+            }
+            case 'getFoodInfo': {
+                const prompt = `Responda à seguinte dúvida sobre alimentos de forma clara e concisa. Pergunta: "${payload.question}" ${payload.mealContext ? `Contexto da refeição: ${JSON.stringify(payload.mealContext)}` : ''}`;
+                const response = await ai.models.generateContent({ model: 'gemini-2.5-flash', contents: prompt });
+                return { statusCode: 200, body: JSON.stringify(response.text) };
+            }
+
+            default:
+                return { statusCode: 400, body: JSON.stringify({ error: `Ação desconhecida: ${action}` }) };
         }
+    } catch (error) {
+        console.error(`Error in action '${action}':`, error);
+        return { statusCode: 500, body: JSON.stringify({ error: error.message || 'An internal server error occurred.' }) };
     }
 }
